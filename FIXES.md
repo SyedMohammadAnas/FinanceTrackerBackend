@@ -1,136 +1,100 @@
-# Encryption & Docker Fixes
+# Cron Service Fixes - Parsing & Indian Time Format
 
-## Problem Summary
+## Issues Fixed
 
-The backend was failing with a "Failed to decrypt token" error when trying to process user transactions. The error occurred because:
+### 1. Email Parser Synchronization
+**Problem:** Backend and frontend email parsers were out of sync, causing cron job to fail parsing emails while manual refresh worked.
 
-1. Tokens stored in the database were encrypted with a different encryption key or algorithm
-2. The backend's encryption implementation was incomplete (missing `encrypt` function)
-3. Error handling needed improvement
+**Solution:**
+- Copied complete frontend `email-parser.ts` to backend to ensure 100% identical parsing logic
+- Both now use the same regex patterns, validation rules, and error handling
 
-## What Was Fixed
+### 2. Indian Time Format
+**Problem:** Timestamps were being saved in ISO format instead of Indian format (DD/MM/YYYY hh:mm AM/PM)
 
-### 1. **Added Complete Encryption Implementation** (`lib/encryption.ts`)
-   - ✅ Added `encrypt()` function to match the `decrypt()` function
-   - ✅ Uses AES-256-GCM encryption algorithm
-   - ✅ Improved error logging for better debugging
+**Solution:**
+- Added `formatToIndianDateTime()` helper function to:
+  - `FinanceTrackerBackend/cron-service.ts` - for metadata timestamp updates
+  - `src/app/api/transactions/refresh/route.ts` - for manual refresh metadata
+  - `src/app/api/setup/route.ts` - for onboarding metadata
+- Backend email-parser.ts already had Indian format for transaction dates
+- All Google Sheet entries now use consistent Indian time format
 
-### 2. **Improved Cron Service Error Handling** (`cron-service.ts`)
-   - ✅ Added encryption key verification on startup
-   - ✅ Better error handling for decryption failures
-   - ✅ Automatically marks users as inactive when tokens can't be decrypted
-   - ✅ Clears invalid tokens from the database
-   - ✅ Added detailed logging for troubleshooting
+### 3. Enhanced Logging
+**Problem:** No visibility into why emails were being marked as "missed" during cron processing
 
-### 3. **Updated Docker Configuration**
-   - ✅ Removed obsolete `version` attribute from `docker-compose.yml`
-   - ✅ Made dotenv loading more robust for containerized environments
-   - ✅ Environment variables now properly injected from `.env` file
+**Solution:**
+- Added detailed logging in cron-service.ts:
+  - ✅ Success: Shows amount, type, and description for parsed transactions
+  - 🔄 Duplicate: Shows when a transaction is skipped due to existing reference number
+  - ❌ Parse failed: Shows error message, subject, and body preview for failed parses
 
-### 4. **Added Utility Scripts**
-   - ✅ Created `scripts/reset-user-auth.ts` for managing user authentication status
+## Files Modified
 
-## Current Status
+### Backend (FinanceTrackerBackend/)
+1. `cron-service.ts` - Added logging and Indian time format for metadata
+2. `lib/email-parser.ts` - Complete sync with frontend version
 
-✅ **Backend is running successfully**
-✅ **Encryption/decryption working correctly**
-✅ **No more decryption errors**
-✅ **Proper error handling in place**
+### Frontend (src/)
+1. `app/api/transactions/refresh/route.ts` - Indian time format for metadata
+2. `app/api/setup/route.ts` - Indian time format for metadata
 
-## What You Need to Do
+## Testing Instructions
 
-### For the user `stoicgreek2006@gmail.com`:
-
-The user has been marked as **inactive** and needs to **re-authenticate** through the frontend. Their old token was encrypted with a different key and cannot be decrypted.
-
-**Steps:**
-1. User logs out from the frontend
-2. User logs in again with Google OAuth
-3. Frontend will encrypt new tokens with the correct encryption key
-4. Backend will be able to decrypt and use the new tokens
-
-### Environment Variables
-
-Ensure both frontend and backend are using the **same** `ENCRYPTION_SECRET_KEY`:
-
-**Backend `.env`:**
-```env
-ENCRYPTION_SECRET_KEY=9c87e985e55c4d0180c553691427b40c
-```
-
-**Frontend `.env`:**
-```env
-ENCRYPTION_SECRET_KEY=9c87e985e55c4d0180c553691427b40c
-```
-
-Both are already correctly set! ✅
-
-## Useful Commands
-
-### Check Backend Logs
+### Step 1: Restart Backend Service
 ```bash
-docker-compose logs -f
-```
-
-### Restart Backend
-```bash
-docker-compose restart
-```
-
-### Rebuild Backend
-```bash
+cd FinanceTrackerBackend
 docker-compose down
 docker-compose up --build -d
 ```
 
-### Reset User Authentication
+### Step 2: Monitor Logs
 ```bash
-# Reset specific user
-npx tsx scripts/reset-user-auth.ts user@example.com
-
-# Reset all users
-npx tsx scripts/reset-user-auth.ts
+docker-compose logs -f
 ```
 
-## Technical Details
+### Step 3: Test with New Transaction
+1. Make a test transaction (UPI/Card payment)
+2. Wait for HDFC email (usually instant)
+3. Wait for next cron cycle (runs every 5 minutes)
+4. Check logs for detailed output:
+   - Should see: `✅ Parsed: ₹[amount] [type] - [description]`
+   - Should NOT see: `❌ Parse failed`
+5. Verify transaction appears in Google Sheet with Indian time format
 
-### Encryption Format
+### Step 4: Verify Google Sheet
+1. Check "Transactions" sheet - Date/Time column should show: `DD/MM/YYYY hh:mm AM/PM`
+2. Check "Metadata" sheet (cell B2) - Last sync should show: `DD/MM/YYYY hh:mm AM/PM`
 
-Encrypted tokens use the following format:
-- **IV (32 hex chars)** - Initialization Vector (16 bytes)
-- **Auth Tag (32 hex chars)** - Authentication Tag (16 bytes)
-- **Encrypted Data (variable length)** - The actual encrypted content
+## What Changed in Parsing Logic
 
-Example encrypted token length: ~112 characters for a typical refresh token
+The parser now validates that emails contain:
+1. **Amount** (e.g., Rs. 500, INR 1,000)
+2. **Type** (credited/debited)
+3. **Account** (last 4 digits)
 
-### How It Works
+If any of these are missing, the email is marked as "missed" with detailed error message.
 
-1. **Frontend**: User logs in → Gets Google OAuth tokens → Encrypts with `ENCRYPTION_SECRET_KEY` → Stores in database
-2. **Backend**: Reads encrypted token from database → Decrypts with same `ENCRYPTION_SECRET_KEY` → Uses to refresh access tokens → Fetches emails and syncs to Google Sheets
+## Time Format Examples
 
-### Why the Old Token Failed
+**Before (ISO):**
+- `2026-01-12T18:51:14.692Z`
 
-The token in the database (270 characters) was encrypted with:
-- Different encryption key, OR
-- Different encryption algorithm, OR
-- Different encryption library implementation
+**After (Indian):**
+- `12/01/2026 12:21 AM`
+- `13/01/2026 7:30 PM`
 
-The new encryption implementation (which generates ~112 character tokens) uses:
-- Algorithm: `aes-256-gcm`
-- Key derivation: SHA-256 hash of `ENCRYPTION_SECRET_KEY`
-- Format: IV (16 bytes) + Tag (16 bytes) + Encrypted data
+## Debugging Failed Parses
 
-## Next Steps
+If you see `❌ Parse failed` in logs:
+1. Check the subject line (logged after failure)
+2. Check the body preview (first 150 chars, logged after failure)
+3. Verify the email is from `alerts@hdfcbank.net`
+4. Ensure email contains transaction keywords (credited/debited/UPI)
+5. Check if amount/account/type are clearly mentioned in email
 
-1. ✅ Backend is fixed and running
-2. 📋 User needs to re-authenticate on frontend
-3. ✅ New tokens will be encrypted correctly
-4. ✅ Cron service will process emails automatically
+## Previous Sync Time Note
 
-## Support
-
-If issues persist:
-1. Check that `ENCRYPTION_SECRET_KEY` matches in both frontend and backend
-2. Verify user has re-authenticated after the fix
-3. Check backend logs: `docker-compose logs -f`
-4. Ensure frontend is using the same encryption algorithm
+Since the last_sync_time was already updated before this fix, the cron won't re-process old emails. For testing:
+- Make a NEW transaction after restarting the backend
+- Or manually trigger refresh from the app (which already worked)

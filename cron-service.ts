@@ -9,6 +9,18 @@ import { config } from 'dotenv';
 import { decrypt } from './lib/encryption';
 import { parseHDFCEmail, type ParsedTransaction } from './lib/email-parser';
 
+// Helper to format date to Indian format
+function formatToIndianDateTime(date: Date): string {
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  let hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${day}/${month}/${year} ${hours}:${minutes} ${ampm}`;
+}
+
 // Load .env file if it exists (local development)
 // In Docker, environment variables are injected by docker-compose
 config({ path: '.env' });
@@ -196,8 +208,14 @@ async function processUser(user: User): Promise<{ transactions: number; missed: 
           if (!existingRefs.has(result.transaction.referenceNumber)) {
             newTransactions.push(result.transaction);
             existingRefs.add(result.transaction.referenceNumber);
+            console.log(`✅ Parsed: ₹${result.transaction.amount} ${result.transaction.type} - ${result.transaction.description}`);
+          } else {
+            console.log(`🔄 Duplicate skipped: ${result.transaction.referenceNumber}`);
           }
         } else {
+          console.log(`❌ Parse failed: ${result.error || 'Unknown error'}`);
+          console.log(`📧 Subject: ${subject}`);
+          console.log(`📝 Body preview: ${body.substring(0, 150)}...`);
           missedEmails.push({
             email_id: message.id,
             subject,
@@ -242,11 +260,13 @@ async function processUser(user: User): Promise<{ transactions: number; missed: 
 
     if (latestTimestamp) {
       try {
+        // Update metadata with Indian formatted timestamp
+        const indianFormattedTime = formatToIndianDateTime(latestTimestamp);
         await sheets.spreadsheets.values.update({
           spreadsheetId: user.google_sheet_id,
           range: 'Metadata!B2',
           valueInputOption: 'USER_ENTERED',
-          requestBody: { values: [[latestTimestamp.toISOString()]] },
+          requestBody: { values: [[indianFormattedTime]] },
         });
       } catch (metaError) {
         console.warn(`⚠️  Failed to update metadata`);

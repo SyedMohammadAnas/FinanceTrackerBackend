@@ -32,19 +32,43 @@ export interface ParseResult {
 
 // Regex patterns for HDFC Bank emails
 const PATTERNS = {
+  // Amount: Rs. 4000.00, Rs.30.00, INR 3,500.00
   amount: /(?:Rs\.?|INR)\s*([\d,]+\.?\d*)/i,
+
+  // Type: credited, debited
   type: /(credited|debited)/i,
+
+  // Account: account **8256, account 8256, XX8256, ending 4118
   account: /(?:account\s*\*{0,2}|XX|ending\s*)(\d{4})/i,
+
+  // Date formats: 09-01-26, 02/01/26, 29 Dec, 2025, 29 Dec 2025
   date: /(\d{2}[-/]\d{2}[-/]\d{2,4}|\d{1,2}\s+[A-Za-z]{3},?\s+\d{4})/,
+
+  // Time: at 13:55:26, at 07:46:29
   time: /at\s+(\d{2}:\d{2}(?::\d{2})?)/,
+
+  // Method: UPI, Debit Card, Credit Card, Cash Deposit, Net Banking
   method: /(UPI|Debit Card|Credit Card|Cash Deposit(?:\s+Machine)?|Net Banking|NEFT|IMPS|RTGS)/i,
+
+  // Reference Number: reference number is 537932190659
   referenceNumber: /(?:reference number is|ref(?:erence)?\.?\s*(?:no|number)?\.?\s*(?:is)?)\s*:?\s*(\w+)/i,
+
+  // UPI ID and name: VPA tabrezkhan009@ybl Tabrez Khan, to VPA xxx@paytm NAME
   upiMerchant: /(?:to|by)\s+VPA\s+([^\s]+@[^\s]+)\s+([A-Z][A-Za-z\s]+?)(?:\s+on|\s+Your|$)/i,
+
+  // Card merchant: at SRMIST FACULTY OF ENGI on
   cardMerchant: /at\s+([A-Z][A-Z0-9\s\-]+?)(?:\s+on|\s+at\s+\d)/i,
+
+  // Cash deposit location: at Gandhi Park - Guntur via
   depositLocation: /at\s+([A-Za-z\s\-]+)(?:\s+via)/i,
+
+  // Available balance: available balance is INR 6,508.99
   balance: /available balance (?:is\s+)?(?:INR|Rs\.?)\s*([\d,]+\.?\d*)/i,
 };
 
+/**
+ * Format date to Indian format: DD/MM/YYYY hh:mm AM/PM
+ */
 function formatToIndianDateTime(date: Date): string {
   const day = String(date.getDate()).padStart(2, '0');
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -58,20 +82,31 @@ function formatToIndianDateTime(date: Date): string {
   return `${day}/${month}/${year} ${hours}:${minutes} ${ampm}`;
 }
 
+/**
+ * Parse date string from email body
+ */
 function parseEmailDate(dateStr: string, timeStr?: string): Date {
   let parsedDate: Date;
 
   if (dateStr.includes('-') || dateStr.includes('/')) {
+    // Format: "09-01-26" or "02/01/26"
     const parts = dateStr.split(/[-/]/);
     const day = parseInt(parts[0], 10);
-    const month = parseInt(parts[1], 10) - 1;
+    const month = parseInt(parts[1], 10) - 1; // JS months are 0-indexed
     let year = parseInt(parts[2], 10);
-    if (year < 100) year = 2000 + year;
+
+    // Handle 2-digit year
+    if (year < 100) {
+      year = 2000 + year;
+    }
+
     parsedDate = new Date(year, month, day);
   } else {
+    // Format: "29 Dec, 2025" or "29 Dec 2025"
     parsedDate = new Date(dateStr.replace(',', ''));
   }
 
+  // Add time if present
   if (timeStr) {
     const timeParts = timeStr.split(':');
     parsedDate.setHours(
@@ -84,6 +119,9 @@ function parseEmailDate(dateStr: string, timeStr?: string): Date {
   return parsedDate;
 }
 
+/**
+ * Parse HDFC Bank email and extract transaction details
+ */
 export function parseHDFCEmail(
   emailBody: string,
   emailSubject: string,
@@ -105,23 +143,28 @@ export function parseHDFCEmail(
   };
 
   try {
+    // Normalize the email body - replace multiple spaces and newlines
     const normalizedBody = emailBody.replace(/\s+/g, ' ').trim();
 
+    // Extract Amount
     const amountMatch = normalizedBody.match(PATTERNS.amount);
     if (amountMatch) {
       transaction.amount = parseFloat(amountMatch[1].replace(/,/g, ''));
     }
 
+    // Extract Type
     const typeMatch = normalizedBody.match(PATTERNS.type);
     if (typeMatch) {
       transaction.type = typeMatch[1].toLowerCase() === 'credited' ? 'Credit' : 'Debit';
     }
 
+    // Extract Account
     const accountMatch = normalizedBody.match(PATTERNS.account);
     if (accountMatch) {
       transaction.account = accountMatch[1];
     }
 
+    // Extract Date
     const dateMatch = normalizedBody.match(PATTERNS.date);
     const timeMatch = normalizedBody.match(PATTERNS.time);
 
@@ -129,12 +172,15 @@ export function parseHDFCEmail(
       const parsedDate = parseEmailDate(dateMatch[1], timeMatch?.[1]);
       transaction.dateTime = formatToIndianDateTime(parsedDate);
     } else {
+      // Use email received date as fallback
       transaction.dateTime = transaction.emailReceivedDate;
     }
 
+    // Extract Method
     const methodMatch = normalizedBody.match(PATTERNS.method);
     if (methodMatch) {
       let method = methodMatch[1];
+      // Normalize method names
       if (method.toLowerCase().includes('cash deposit')) {
         method = 'Cash Deposit';
       }
@@ -143,11 +189,13 @@ export function parseHDFCEmail(
       transaction.method = 'UPI';
     }
 
+    // Extract Reference Number
     const refMatch = normalizedBody.match(PATTERNS.referenceNumber);
     if (refMatch) {
       transaction.referenceNumber = refMatch[1];
     }
 
+    // Extract Merchant/Description based on method
     if (transaction.method === 'UPI') {
       const upiMatch = normalizedBody.match(PATTERNS.upiMerchant);
       if (upiMatch) {
@@ -165,15 +213,18 @@ export function parseHDFCEmail(
       }
     }
 
+    // Fallback description from subject if not found
     if (!transaction.description && emailSubject) {
       transaction.description = emailSubject.substring(0, 50);
     }
 
+    // Extract Available Balance
     const balanceMatch = normalizedBody.match(PATTERNS.balance);
     if (balanceMatch) {
       transaction.availableBalance = parseFloat(balanceMatch[1].replace(/,/g, ''));
     }
 
+    // Validation: Must have at least amount, type, and account
     if (!transaction.amount || !transaction.type || !transaction.account) {
       return {
         success: false,
@@ -188,6 +239,7 @@ export function parseHDFCEmail(
       };
     }
 
+    // Generate reference number if not found
     if (!transaction.referenceNumber) {
       transaction.referenceNumber = `EMAIL_${emailId}`;
     }
@@ -207,4 +259,47 @@ export function parseHDFCEmail(
       },
     };
   }
+}
+
+/**
+ * Check if an email is from HDFC Bank and contains transaction info
+ */
+export function isHDFCTransactionEmail(from: string, subject: string, body: string): boolean {
+  const isFromHDFC = from.toLowerCase().includes('hdfcbank.net') ||
+                     from.toLowerCase().includes('hdfc bank');
+
+  const hasTransactionKeywords =
+    /credited|debited|transaction|upi|account update/i.test(subject) ||
+    /credited|debited|transaction|upi/i.test(body);
+
+  return isFromHDFC && hasTransactionKeywords;
+}
+
+/**
+ * Create a manual transaction entry
+ */
+export function createManualTransaction(
+  amount: number,
+  type: 'Credit' | 'Debit',
+  dateTime: Date,
+  category: string,
+  notes: string,
+  method?: string,
+  account?: string,
+  description?: string
+): ParsedTransaction {
+  const now = new Date();
+  return {
+    dateTime: formatToIndianDateTime(dateTime),
+    amount,
+    type,
+    method: method || 'Manual',
+    account: account || '',
+    description: description || 'Manual Entry',
+    referenceNumber: `MANUAL_${now.getTime()}`,
+    availableBalance: 'N/A',
+    category,
+    notes,
+    emailReceivedDate: 'Manual Entry',
+  };
 }
