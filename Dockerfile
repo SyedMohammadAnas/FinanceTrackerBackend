@@ -3,13 +3,13 @@ FROM node:18-alpine
 # Set working directory
 WORKDIR /app
 
-# Copy package files
+# Copy package files first
 COPY package*.json ./
 
-# Install dependencies
+# Install dependencies (will install Linux binaries)
 RUN npm ci --only=production
 
-# Copy source code
+# Copy source code (node_modules excluded via .dockerignore)
 COPY . .
 
 # Create non-root user
