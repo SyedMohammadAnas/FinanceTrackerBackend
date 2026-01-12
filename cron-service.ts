@@ -9,12 +9,22 @@ import { config } from 'dotenv';
 import { decrypt } from './lib/encryption';
 import { parseHDFCEmail, type ParsedTransaction } from './lib/email-parser';
 
-config();
+// Load .env file if it exists (local development)
+// In Docker, environment variables are injected by docker-compose
+config({ path: '.env' });
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID!;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET!;
+const ENCRYPTION_KEY = process.env.ENCRYPTION_SECRET_KEY;
+
+// Verify encryption key is loaded
+if (!ENCRYPTION_KEY) {
+  console.error('❌ ENCRYPTION_SECRET_KEY is not set in environment variables!');
+  process.exit(1);
+}
+console.log('✅ Encryption key loaded:', ENCRYPTION_KEY.substring(0, 8) + '...');
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
@@ -73,7 +83,27 @@ async function processUser(user: User): Promise<{ transactions: number; missed: 
   await supabase.from('users').update({ is_processing: true }).eq('id', user.id);
 
   try {
-    const refreshToken = decrypt(user.google_refresh_token);
+    console.log(`🔑 Attempting to decrypt refresh token (length: ${user.google_refresh_token?.length || 0})`);
+
+    let refreshToken: string;
+    try {
+      refreshToken = decrypt(user.google_refresh_token);
+      console.log(`✅ Token decrypted successfully`);
+    } catch (decryptError) {
+      console.error(`❌ Failed to decrypt token - token was encrypted with a different key or algorithm`);
+      console.error(`   User needs to re-authenticate on the frontend`);
+      await supabase
+        .from('users')
+        .update({
+          is_active: false,
+          is_processing: false,
+          google_access_token: '',
+          google_refresh_token: '',
+        })
+        .eq('id', user.id);
+      return null;
+    }
+
     const accessToken = await refreshAccessToken(refreshToken);
 
     if (!accessToken) {

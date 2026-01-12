@@ -8,7 +8,9 @@ import cors from 'cors';
 import { config } from 'dotenv';
 import { runCron } from './cron-service';
 
-config();
+// Load .env file if it exists (local development)
+// In Docker, environment variables are injected by docker-compose
+config({ path: '.env' });
 
 const app = express();
 const PORT = process.env.PORT || 3003;
